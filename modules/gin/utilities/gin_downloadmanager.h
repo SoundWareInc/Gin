@@ -101,7 +101,12 @@ public:
                             std::function<void (DownloadResult)> completionCallback,
                             std::function<void (juce::int64, juce::int64, juce::int64)> progressCallback = nullptr,
                             juce::String extraHeaders = {});
-
+    
+    int startAsyncDownloadChunked(juce::URL url,
+                                  std::function<void(DownloadResult)> completionCallback,
+                                  std::function<void(juce::int64, juce::int64, juce::int64)> progressCallback,
+                                  std::function<void(const char*, int)> chunkCallback,
+                                  juce::String extraHeaders = {});
     /** Cancels all downloads */
     void cancelAllDownloads();
 
@@ -129,7 +134,8 @@ private:
         DownloadResult result;
         std::function<void (DownloadResult)> completionCallback;
         std::function<void (juce::int64, juce::int64, juce::int64)> progressCallback;
-
+        std::function<void(const char*, int)> chunkCallback;
+        
         std::unique_ptr<juce::WebInputStream> is;
 
         DownloadManager& owner;
@@ -138,6 +144,7 @@ private:
         bool started = false, async = true;
         juce::uint32 lastProgress = 0;
         juce::int64 lastBytesSent = 0;
+        
 
         //==============================================================================
         JUCE_DECLARE_WEAK_REFERENCEABLE (Download)

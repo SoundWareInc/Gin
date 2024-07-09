@@ -116,6 +116,37 @@ int DownloadManager::startAsyncDownload (juce::URL url,
     return download->result.downloadId;
 }
 
+int DownloadManager::startAsyncDownloadChunked(juce::URL url,
+                                          std::function<void(DownloadResult)> completionCallback,
+                                          std::function<void(juce::int64, juce::int64, juce::int64)> progressCallback,
+                                          std::function<void(const char*, int)> chunkCallback,
+                                          juce::String extraHeaders)
+{
+#if JUCE_WINDOWS
+    // macOS does this automatically
+    if (gzipDeflate)
+    {
+        auto headerList = juce::StringArray::fromTokens(extraHeaders, "\n", "");
+        headerList.add("Accept-Encoding: gzip");
+        extraHeaders = headerList.joinIntoString("\n");
+    }
+#endif
+
+    auto download = new Download(*this);
+    download->result.url = url;
+    download->headers = extraHeaders;
+    download->result.downloadId = ++nextId;
+    download->completionCallback = completionCallback;
+    download->progressCallback = progressCallback;
+    download->chunkCallback = chunkCallback;
+
+    downloads.add(download);
+
+    triggerNextDownload();
+
+    return download->result.downloadId;
+}
+
 void DownloadManager::cancelAllDownloads()
 {
     runningDownloads = 0;
@@ -208,39 +239,37 @@ bool DownloadManager::Download::tryDownload()
     // Use post if we have post data
     const bool post = result.url.getPostData().isNotEmpty();
 
-    if ((is = std::make_unique<juce::WebInputStream> (result.url, post)) != nullptr)
+    if ((is = std::make_unique<juce::WebInputStream>(result.url, post)) != nullptr)
     {
         if (headers.isNotEmpty())
-            is->withExtraHeaders (headers);
-        is->withConnectionTimeout (owner.connectTimeout);
+            is->withExtraHeaders(headers);
+        is->withConnectionTimeout(owner.connectTimeout);
 
-        if (is->connect (nullptr))
+        if (is->connect(nullptr))
         {
             // Save headers and http response code
-            result.httpCode         = is->getStatusCode();
-            result.responseHeaders  = is->getResponseHeaders();
+            result.httpCode = is->getStatusCode();
+            result.responseHeaders = is->getResponseHeaders();
 
             auto keys = result.responseHeaders.getAllKeys();
             auto vals = result.responseHeaders.getAllValues();
 
-            juce::MemoryOutputStream os (result.data, false);
-
             lastBytesSent = 0;
             lastProgress = juce::Time::getMillisecondCounter();
-            juce::int64 downloaded  = 0;
+            juce::int64 downloaded = 0;
             juce::int64 totalLength = is->getTotalLength();
 
-            // For chunked http encoding, overall length may not be given
+            // For chunked HTTP encoding, overall length may not be given
             if (totalLength < 0)
                 totalLength = std::numeric_limits<juce::int64>::max();
 
             // Download all data
             char buffer[128 * 1000];
-            while (! is->isExhausted() && ! threadShouldExit() && downloaded < totalLength)
+            while (!is->isExhausted() && !threadShouldExit() && downloaded < totalLength)
             {
-                juce::int64 toRead = juce::jmin (juce::int64 (sizeof (buffer)), juce::int64 (owner.downloadBlockSize), totalLength - downloaded);
+                juce::int64 toRead = juce::jmin(juce::int64(sizeof(buffer)), juce::int64(owner.downloadBlockSize), totalLength - downloaded);
 
-                int read = is->read (buffer, int (toRead));
+                int read = is->read(buffer, int(toRead));
 
                 if (owner.pause.load())
                 {
@@ -249,11 +278,13 @@ bool DownloadManager::Download::tryDownload()
                 }
                 else if (read > 0)
                 {
-                    os.write (buffer, size_t (read));
+                    if (chunkCallback)
+                        chunkCallback(buffer, read);
+
                     downloaded += read;
                     result.ok = (is->isExhausted() || downloaded == totalLength) && result.httpCode == 200;
 
-                    updateProgress (downloaded, totalLength, false);
+                    updateProgress(downloaded, totalLength, false);
                 }
                 else if (read == 0 && is->isExhausted())
                 {
@@ -272,28 +303,28 @@ bool DownloadManager::Download::tryDownload()
                 }
             }
 
-            updateProgress (downloaded, totalLength, true);
+            updateProgress(downloaded, totalLength, true);
         }
     }
 
-   #if JUCE_WINDOWS
+#if JUCE_WINDOWS
     // Decompress the gzip encoded data. This happens automatically on macOS
     if (result.ok && result.responseHeaders["Content-Encoding"] == "gzip")
     {
-        juce::MemoryInputStream mis (result.data, true);
-        juce::GZIPDecompressorInputStream gis (&mis, false, juce::GZIPDecompressorInputStream::gzipFormat);
+        juce::MemoryInputStream mis(result.data, true);
+        juce::GZIPDecompressorInputStream gis(&mis, false, juce::GZIPDecompressorInputStream::gzipFormat);
 
         result.data.reset();
 
-        while (! gis.isExhausted())
+        while (!gis.isExhausted())
         {
             char buffer[10 * 1024];
-            int read = gis.read (buffer, sizeof (buffer));
+            int read = gis.read(buffer, sizeof(buffer));
             if (read > 0)
-                result.data.append (buffer, size_t (read));
+                result.data.append(buffer, size_t(read));
         }
     }
-   #endif
+#endif
 
     return result.ok;
 }
